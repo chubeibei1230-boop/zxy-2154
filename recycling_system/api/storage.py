@@ -400,12 +400,12 @@ def approve_cleaning_request(rid, operator_id, notes=""):
             return None, "请求不存在"
         if req["status"] != "request_cleaning":
             return None, f"当前状态为{req['status']}，无法审批"
-        req["status"] = "pending_confirmation"
+        req["status"] = "cleaning_in_progress"
         req["updated_at"] = _now()
         _add_processing_record(req, "approve", operator_id, notes)
         point = POINTS.get(req["point_id"])
         if point:
-            point["status"] = "pending_confirmation"
+            point["status"] = "cleaning_in_progress"
             point["updated_at"] = _now()
         sync_tasks_from_business()
         return deepcopy(req), None
@@ -1022,6 +1022,7 @@ def sync_tasks_from_business():
 
 
 def list_tasks(filters=None, user=None):
+    detect_alerts()
     sync_tasks_from_business()
     with _lock:
         results = list(TASKS.values())
@@ -1130,6 +1131,13 @@ def start_task(tid, operator_id):
             return None, "任务不存在"
         if task["status"] not in ("pending", "assigned"):
             return None, f"任务状态为{task['status_name']}，无法开始处理"
+        operator = USERS.get(operator_id)
+        if operator and operator.get("role") == "field_staff":
+            user_areas = operator.get("areas", [])
+            if (task["area"] not in user_areas
+                    and task["responsible_person"] != operator_id
+                    and task.get("assignee") != operator_id):
+                return None, "无权限处理该区域任务"
         task["status"] = "in_progress"
         task["status_name"] = dict(TASK_STATUSES)["in_progress"]
         task["updated_at"] = _now()
@@ -1151,12 +1159,13 @@ def compute_task_statistics(filters=None, user=None):
                 "by_type": {},
                 "by_status": {},
             }
-        if task["status"] not in ("completed", "closed"):
+        is_active = task["status"] not in ("completed", "closed")
+        if is_active:
             area_stats[area]["total_pending"] += 1
-        if task["is_timeout"]:
-            area_stats[area]["total_timeout"] += 1
-        if task["priority"] in ("high", "critical"):
-            area_stats[area]["total_high_priority"] += 1
+            if task["is_timeout"]:
+                area_stats[area]["total_timeout"] += 1
+            if task["priority"] in ("high", "critical"):
+                area_stats[area]["total_high_priority"] += 1
 
         tt = task["task_type_name"]
         area_stats[area]["by_type"][tt] = area_stats[area]["by_type"].get(tt, 0) + 1
@@ -1167,8 +1176,8 @@ def compute_task_statistics(filters=None, user=None):
     overall = {
         "total_tasks": len(tasks),
         "total_pending": sum(1 for t in tasks if t["status"] not in ("completed", "closed")),
-        "total_timeout": sum(1 for t in tasks if t["is_timeout"]),
-        "total_high_priority": sum(1 for t in tasks if t["priority"] in ("high", "critical")),
+        "total_timeout": sum(1 for t in tasks if t["status"] not in ("completed", "closed") and t["is_timeout"]),
+        "total_high_priority": sum(1 for t in tasks if t["status"] not in ("completed", "closed") and t["priority"] in ("high", "critical")),
         "by_priority": {},
         "by_type": {},
         "by_status": {},
@@ -1254,12 +1263,13 @@ def get_task_board(filters=None, user=None):
             }
         group = area_groups[area]
         group["summary"]["total_tasks"] += 1
-        if task["status"] not in ("completed", "closed"):
+        is_active = task["status"] not in ("completed", "closed")
+        if is_active:
             group["summary"]["pending_count"] += 1
-        if task.get("is_timeout"):
-            group["summary"]["timeout_count"] += 1
-        if task.get("priority") in ("high", "critical"):
-            group["summary"]["high_priority_count"] += 1
+            if task.get("is_timeout"):
+                group["summary"]["timeout_count"] += 1
+            if task.get("priority") in ("high", "critical"):
+                group["summary"]["high_priority_count"] += 1
 
         tt_name = task.get("task_type_name", "")
         group["summary"]["by_type"][tt_name] = group["summary"]["by_type"].get(tt_name, 0) + 1
@@ -1278,8 +1288,8 @@ def get_task_board(filters=None, user=None):
         "total_areas": len(area_list),
         "total_tasks": len(tasks),
         "total_pending": sum(1 for t in tasks if t["status"] not in ("completed", "closed")),
-        "total_timeout": sum(1 for t in tasks if t.get("is_timeout")),
-        "total_high_priority": sum(1 for t in tasks if t.get("priority") in ("high", "critical")),
+        "total_timeout": sum(1 for t in tasks if t["status"] not in ("completed", "closed") and t.get("is_timeout")),
+        "total_high_priority": sum(1 for t in tasks if t["status"] not in ("completed", "closed") and t.get("priority") in ("high", "critical")),
         "by_type": {},
         "by_status": {},
         "by_priority": {},
