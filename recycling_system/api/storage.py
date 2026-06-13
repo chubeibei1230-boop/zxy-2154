@@ -298,6 +298,9 @@ def _apply_inspection_filters(inspections, filters):
         result = [i for i in result if i["timestamp"] <= filters["date_to"] + " 23:59:59"]
     if filters.get("overflow") is not None:
         result = [i for i in result if i["overflow"] == filters["overflow"]]
+    if filters.get("responsible_person"):
+        rp = filters["responsible_person"]
+        result = [i for i in result if POINTS.get(i["point_id"], {}).get("responsible_person") == rp]
     return result
 
 
@@ -365,6 +368,9 @@ def _apply_request_filters(requests, filters):
         result = [r for r in result if r["created_at"] >= filters["date_from"]]
     if filters.get("date_to"):
         result = [r for r in result if r["created_at"] <= filters["date_to"] + " 23:59:59"]
+    if filters.get("responsible_person"):
+        rp = filters["responsible_person"]
+        result = [r for r in result if POINTS.get(r["point_id"], {}).get("responsible_person") == rp]
     return result
 
 
@@ -389,12 +395,12 @@ def approve_cleaning_request(rid, operator_id, notes=""):
             return None, "请求不存在"
         if req["status"] != "request_cleaning":
             return None, f"当前状态为{req['status']}，无法审批"
-        req["status"] = "cleaning_in_progress"
+        req["status"] = "pending_confirmation"
         req["updated_at"] = _now()
         _add_processing_record(req, "approve", operator_id, notes)
         point = POINTS.get(req["point_id"])
         if point:
-            point["status"] = "cleaning_in_progress"
+            point["status"] = "pending_confirmation"
             point["updated_at"] = _now()
         return deepcopy(req), None
 
@@ -404,14 +410,16 @@ def complete_cleaning_request(rid, operator_id, notes=""):
         req = CLEANING_REQUESTS.get(rid)
         if not req:
             return None, "请求不存在"
-        if req["status"] != "cleaning_in_progress":
-            return None, f"当前状态为{req['status']}，无法完成"
-        req["status"] = "pending_confirmation"
+        if req["status"] not in ("pending_confirmation", "cleaning_in_progress"):
+            return None, f"当前状态为{req['status']}，无法补充完成说明"
+        if req["status"] == "cleaning_in_progress":
+            req["status"] = "pending_confirmation"
         req["updated_at"] = _now()
         _add_processing_record(req, "complete", operator_id, notes)
         point = POINTS.get(req["point_id"])
         if point:
-            point["status"] = "pending_confirmation"
+            if point["status"] == "cleaning_in_progress":
+                point["status"] = "pending_confirmation"
             point["updated_at"] = _now()
         return deepcopy(req), None
 
@@ -624,6 +632,12 @@ def compute_statistics(filters=None):
             points = [p for p in points if p["area"] == filters["area"]]
             inspections = [i for i in inspections if i["area"] == filters["area"]]
             requests = [r for r in requests if r["area"] == filters["area"]]
+        if filters.get("responsible_person"):
+            rp = filters["responsible_person"]
+            point_ids = [p["id"] for p in points if p["responsible_person"] == rp]
+            points = [p for p in points if p["responsible_person"] == rp]
+            inspections = [i for i in inspections if i["point_id"] in point_ids]
+            requests = [r for r in requests if r["point_id"] in point_ids]
         if filters.get("date_from"):
             inspections = [i for i in inspections if i["timestamp"] >= filters["date_from"]]
             requests = [r for r in requests if r["created_at"] >= filters["date_from"]]

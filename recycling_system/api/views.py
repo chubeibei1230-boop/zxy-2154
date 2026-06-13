@@ -350,9 +350,23 @@ class CleaningRequestCompleteView(APIView):
 
 
 class CleaningRequestConfirmView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, rid):
+        req = storage.get_cleaning_request(rid)
+        if not req:
+            return Response(
+                {"success": False, "error": "清运请求不存在"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        point = storage.get_point(req["point_id"])
+        is_admin = request.user.get("role") == "admin"
+        is_confirm_person = point and point.get("confirm_person") == request.user["id"]
+        if not (is_admin or is_confirm_person):
+            return Response(
+                {"success": False, "error": "无权限确认，仅管理员或指定确认人可操作"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         notes = request.data.get("notes", "")
         req, error = storage.confirm_cleaning_request(rid, request.user["id"], notes)
         if error:
@@ -364,9 +378,23 @@ class CleaningRequestConfirmView(APIView):
 
 
 class CleaningRequestRejectView(APIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAuthenticated]
 
     def post(self, request, rid):
+        req = storage.get_cleaning_request(rid)
+        if not req:
+            return Response(
+                {"success": False, "error": "清运请求不存在"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        point = storage.get_point(req["point_id"])
+        is_admin = request.user.get("role") == "admin"
+        is_confirm_person = point and point.get("confirm_person") == request.user["id"]
+        if not (is_admin or is_confirm_person):
+            return Response(
+                {"success": False, "error": "无权限退回，仅管理员或指定确认人可操作"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         reason = request.data.get("reason", "")
         if not reason:
             return Response(
