@@ -486,6 +486,9 @@ class ExportView(APIView):
                 filters[key] = request.query_params.get(key)
         export_format = request.query_params.get("format", "json")
         data = storage.export_data(filters if filters else None)
+        user = request.user._data if hasattr(request.user, '_data') else request.user
+        task_data = storage.export_task_data(filters if filters else None, user=user)
+        data["task_board"] = task_data
 
         if export_format == "csv":
             import csv
@@ -526,6 +529,25 @@ class ExportView(APIView):
                             val = json.dumps(val, ensure_ascii=False)
                         row.append(val)
                     writer.writerow(row)
+            writer.writerow([])
+            writer.writerow(["=== 任务看板统计汇总 ==="])
+            writer.writerow(["总任务数", task_data["statistics"]["overall"]["total_tasks"]])
+            writer.writerow(["待办总数", task_data["statistics"]["overall"]["total_pending"]])
+            writer.writerow(["超时总数", task_data["statistics"]["overall"]["total_timeout"]])
+            writer.writerow(["高优先级总数", task_data["statistics"]["overall"]["total_high_priority"]])
+            writer.writerow([])
+            writer.writerow(["=== 任务看板明细 ==="])
+            if task_data["tasks"]:
+                headers = list(task_data["tasks"][0].keys())
+                writer.writerow(headers)
+                for t in task_data["tasks"]:
+                    row = []
+                    for h in headers:
+                        val = t.get(h, "")
+                        if isinstance(val, (dict, list)):
+                            val = json.dumps(val, ensure_ascii=False)
+                        row.append(val)
+                    writer.writerow(row)
             output.seek(0)
             response = HttpResponse(output.getvalue(), content_type="text/csv; charset=utf-8-sig")
             response["Content-Disposition"] = "attachment; filename=recycling_export.csv"
@@ -537,3 +559,232 @@ class ExportView(APIView):
         )
         response["Content-Disposition"] = "attachment; filename=recycling_export.json"
         return response
+
+
+class TaskListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        filters = {}
+        for key in (
+            "area", "task_type", "priority", "status",
+            "responsible_person", "assignee", "is_timeout",
+            "is_high_risk", "point_id",
+        ):
+            if request.query_params.get(key):
+                filters[key] = request.query_params.get(key)
+        tasks = storage.list_tasks(filters if filters else None, user=request.user._data if hasattr(request.user, '_data') else request.user)
+        return Response({"success": True, "data": tasks, "count": len(tasks)})
+
+
+class TaskDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, tid):
+        task = storage.get_task(tid)
+        if not task:
+            return Response(
+                {"success": False, "error": "任务不存在"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        user = request.user._data if hasattr(request.user, '_data') else request.user
+        if user.get("role") == "field_staff":
+            user_areas = user.get("areas", [])
+            if (task["area"] not in user_areas
+                    and task["responsible_person"] != user.get("id")
+                    and task["assignee"] != user.get("id")):
+                return Response(
+                    {"success": False, "error": "无权限查看该区域任务"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        return Response({"success": True, "data": task})
+
+
+class TaskAssignView(APIView):
+    permission_classes = [IsAdmin]
+
+    def post(self, request, tid):
+        assignee_id = request.data.get("assignee_id")
+        if not assignee_id:
+            return Response(
+                {"success": False, "error": "缺少必填字段: assignee_id"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        task, error = storage.assign_task(tid, assignee_id, request.user["id"])
+        if error:
+            return Response(
+                {"success": False, "error": error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"success": True, "data": task})
+
+
+class TaskCloseView(APIView):
+    permission_classes = [IsAdmin]
+
+    def post(self, request, tid):
+        reason = request.data.get("reason", "")
+        task, error = storage.close_task(tid, request.user["id"], reason)
+        if error:
+            return Response(
+                {"success": False, "error": error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"success": True, "data": task})
+
+
+class TaskStartView(APIView):
+    permission_classes = [IsAdminOrFieldStaff]
+
+    def post(self, request, tid):
+        task = storage.get_task(tid)
+        if not task:
+            return Response(
+                {"success": False, "error": "任务不存在"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        user = request.user._data if hasattr(request.user, '_data') else request.user
+        if user.get("role") == "field_staff":
+            user_areas = user.get("areas", [])
+            if (task["area"] not in user_areas
+                    and task["responsible_person"] != user.get("id")
+                    and task["assignee"] != user.get("id")):
+                return Response(
+                    {"success": False, "error": "无权限处理该区域任务"},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+        task, error = storage.start_task(tid, request.user["id"])
+        if error:
+            return Response(
+                {"success": False, "error": error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response({"success": True, "data": task})
+
+
+class TaskSyncView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tasks = storage.sync_tasks_from_business()
+        return Response({"success": True, "data": "任务同步完成", "count": len(tasks)})
+
+
+class TaskStatisticsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        filters = {}
+        for key in ("area",):
+            if request.query_params.get(key):
+                filters[key] = request.query_params.get(key)
+        user = request.user._data if hasattr(request.user, '_data') else request.user
+        stats = storage.compute_task_statistics(filters if filters else None, user=user)
+        return Response({"success": True, "data": stats})
+
+
+class TaskExportView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        filters = {}
+        for key in (
+            "area", "task_type", "priority", "status",
+            "responsible_person", "assignee", "is_timeout",
+            "is_high_risk",
+        ):
+            if request.query_params.get(key):
+                filters[key] = request.query_params.get(key)
+        user = request.user._data if hasattr(request.user, '_data') else request.user
+        export_format = request.query_params.get("format", "json")
+        data = storage.export_task_data(filters if filters else None, user=user)
+
+        if export_format == "csv":
+            import csv
+            import io
+            output = io.StringIO()
+            writer = csv.writer(output)
+            writer.writerow(["=== 任务看板导出 ==="])
+            writer.writerow(["导出时间", data["export_time"]])
+            writer.writerow(["筛选条件", json.dumps(data["filter_conditions"], ensure_ascii=False)])
+            writer.writerow([])
+
+            writer.writerow(["=== 统计汇总 ==="])
+            writer.writerow(["总任务数", data["statistics"]["overall"]["total_tasks"]])
+            writer.writerow(["待办总数", data["statistics"]["overall"]["total_pending"]])
+            writer.writerow(["超时总数", data["statistics"]["overall"]["total_timeout"]])
+            writer.writerow(["高优先级总数", data["statistics"]["overall"]["total_high_priority"]])
+            writer.writerow([])
+
+            writer.writerow(["=== 各区域统计 ==="])
+            if data["statistics"]["by_area"]:
+                writer.writerow(["区域", "待办数", "超时数", "高优先级数"])
+                for area_stat in data["statistics"]["by_area"]:
+                    writer.writerow([
+                        area_stat["area"],
+                        area_stat["total_pending"],
+                        area_stat["total_timeout"],
+                        area_stat["total_high_priority"],
+                    ])
+            writer.writerow([])
+
+            writer.writerow(["=== 任务明细 ==="])
+            if data["tasks"]:
+                headers = list(data["tasks"][0].keys())
+                writer.writerow(headers)
+                for t in data["tasks"]:
+                    row = []
+                    for h in headers:
+                        val = t.get(h, "")
+                        if isinstance(val, (dict, list)):
+                            val = json.dumps(val, ensure_ascii=False)
+                        row.append(val)
+                    writer.writerow(row)
+
+            output.seek(0)
+            response = HttpResponse(output.getvalue(), content_type="text/csv; charset=utf-8-sig")
+            response["Content-Disposition"] = "attachment; filename=task_board_export.csv"
+            return response
+
+        response = HttpResponse(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            content_type="application/json; charset=utf-8",
+        )
+        response["Content-Disposition"] = "attachment; filename=task_board_export.json"
+        return response
+
+
+class TaskMetaView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response({
+            "success": True,
+            "data": {
+                "task_types": [{"value": v, "label": l} for v, l in storage.TASK_TYPES],
+                "task_statuses": [{"value": v, "label": l} for v, l in storage.TASK_STATUSES],
+                "task_priorities": [{"value": v, "label": l} for v, l in storage.TASK_PRIORITIES],
+            },
+        })
+
+
+class TaskBoardView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if request.user.get("role") == "observer":
+            filters = {}
+            for key in ("area", "task_type", "priority", "status", "is_timeout", "is_high_risk", "point_id"):
+                if request.query_params.get(key):
+                    filters[key] = request.query_params.get(key)
+            user = request.user._data if hasattr(request.user, '_data') else request.user
+            board = storage.get_task_board(filters if filters else None, user=user)
+            return Response({"success": True, "data": board})
+
+        filters = {}
+        for key in ("area", "task_type", "priority", "status", "responsible_person", "assignee", "is_timeout", "is_high_risk", "point_id"):
+            if request.query_params.get(key):
+                filters[key] = request.query_params.get(key)
+        user = request.user._data if hasattr(request.user, '_data') else request.user
+        board = storage.get_task_board(filters if filters else None, user=user)
+        return Response({"success": True, "data": board})

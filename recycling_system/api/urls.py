@@ -30,4 +30,16 @@ urlpatterns = [
 
     path("statistics/", views.StatisticsView.as_view(), name="statistics"),
     path("export/", views.ExportView.as_view(), name="export"),
+
+    path("tasks/", views.TaskListView.as_view(), name="task-list"),
+    path("tasks/meta/", views.TaskMetaView.as_view(), name="task-meta"),
+    path("tasks/statistics/", views.TaskStatisticsView.as_view(), name="task-statistics"),
+    path("tasks/sync/", views.TaskSyncView.as_view(), name="task-sync"),
+    path("tasks/export/", views.TaskExportView.as_view(), name="task-export"),
+    path("tasks/<str:tid>/", views.TaskDetailView.as_view(), name="task-detail"),
+    path("tasks/<str:tid>/assign/", views.TaskAssignView.as_view(), name="task-assign"),
+    path("tasks/<str:tid>/close/", views.TaskCloseView.as_view(), name="task-close"),
+    path("tasks/<str:tid>/start/", views.TaskStartView.as_view(), name="task-start"),
+
+    path("task-board/", views.TaskBoardView.as_view(), name="task-board"),
 ]
